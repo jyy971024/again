@@ -15,11 +15,8 @@ export function formatPrice(price: number): string {
 export function slugify(text: string): string {
   return text
     .toLowerCase()
-    .trim()
-    .replace(/(\d)\.(\d)/g, '$1-$2')
-    .replace(/["']/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/[^\w ]+/g, '')
+    .replace(/ +/g, '-')
 }
 
 export function parseJsonField<T>(field: string | null): T[] {
@@ -39,5 +36,5 @@ export function normalizeAsin(asin?: string | null): string | null {
 }
 
 export function getProductUrlSegment(product: { asin?: string | null; slug: string }): string {
-  return normalizeAsin(product.asin) || product.slug.replace(/-133-/g, '-13-3-')
+  return normalizeAsin(product.asin) || product.slug
 }
