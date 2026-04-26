@@ -42,13 +42,28 @@ export default async function ProductDetail({ params }: { params: Promise<{ slug
           })
         : null
       if (byAsin) return byAsin
-      return await db.product.findUnique({
+
+      const productBySlug = await db.product.findUnique({
         where: { slug },
         include: {
           category: true,
           brandRelation: true
         },
       })
+      if (productBySlug) return productBySlug
+
+      const legacySlug = slug.replace(/-13-3-/g, '-133-')
+      if (legacySlug !== slug) {
+        return await db.product.findUnique({
+          where: { slug: legacySlug },
+          include: {
+            category: true,
+            brandRelation: true
+          },
+        })
+      }
+
+      return null
     } catch (e) {
       console.error('Failed to load product:', e)
       return null
