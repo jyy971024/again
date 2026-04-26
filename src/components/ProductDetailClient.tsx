@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useState, useEffect, useRef } from 'react'
+import type { ReactElement } from 'react'
 import ProductImageGallery from './ProductImageGallery'
 import { formatPrice } from '@/lib/utils'
 import AddToCartButton from './AddToCartButton'
@@ -24,6 +25,49 @@ import AddToCartButton from './AddToCartButton'
      return d.toLocaleDateString()
    } catch { return '' }
  }
+
+function extractYoutubeId(value?: string | null): string | null {
+  if (!value || typeof value !== 'string') return null
+  try {
+    const url = new URL(value)
+    const host = url.hostname.replace(/^www\./, '')
+    if (host === 'youtu.be') {
+      const id = url.pathname.split('/').filter(Boolean)[0]
+      return id || null
+    }
+    if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+      if (url.pathname === '/watch') {
+        return url.searchParams.get('v')
+      }
+      const parts = url.pathname.split('/').filter(Boolean)
+      const embedIndex = parts.findIndex(p => p === 'embed' || p === 'shorts')
+      if (embedIndex >= 0 && parts[embedIndex + 1]) return parts[embedIndex + 1]
+    }
+  } catch {}
+  return null
+}
+
+function getInitialVariantSelection(groups: VariantGroup[]): Record<string, string> {
+  const initial: Record<string, string> = {}
+  if (!Array.isArray(groups)) return initial
+  for (const g of groups) {
+    const first = (g?.options || []).find(Boolean)
+    if (g?.name && first) initial[g.name] = first
+  }
+  return initial
+}
+
+function replaceYoutubeLinks(input: string): string {
+  if (!input) return ''
+  if (input.includes('<iframe')) return input
+  const urlRegex = /(https?:\/\/[^\s"<>]+)/g
+  return input.replace(urlRegex, (url) => {
+    const id = extractYoutubeId(url)
+    if (!id) return url
+    const embedUrl = `https://www.youtube-nocookie.com/embed/${id}`
+    return `<div style="margin:12px 0;"><iframe src="${embedUrl}" title="YouTube video player" style="width:100%; aspect-ratio:16 / 9; border:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>`
+  })
+}
  
  export default function ProductDetailClient({
    id,
@@ -32,6 +76,7 @@ import AddToCartButton from './AddToCartButton'
    categoryName,
    brand,
    upc,
+  asin,
    publishedAt,
    description,
    amazonUrl,
@@ -39,11 +84,16 @@ import AddToCartButton from './AddToCartButton'
    originalPrice,
    images,
    mainImage,
+  youtubeUrl,
+  youtubeIndex,
    bullets,
    variantGroups,
    variantImageMap,
    variantOptionImages,
   variantOptionLinks,
+  variantOptionPrices,
+  variantOptionOriginalPrices,
+  variantOptionTitles,
   showBuyOnAmazon = true,
   showAddToCart = true,
   reviews = [],
@@ -54,6 +104,7 @@ import AddToCartButton from './AddToCartButton'
   categoryName?: string
   brand?: string | null
   upc?: string | null
+  asin?: string | null
   publishedAt?: string | Date | null
   description: string
   amazonUrl: string
@@ -61,29 +112,56 @@ import AddToCartButton from './AddToCartButton'
   originalPrice?: number | null
   images: string[]
   mainImage: string
+  youtubeUrl?: string | null
+  youtubeIndex?: number | null
   bullets: string[]
   variantGroups: VariantGroup[]
   variantImageMap?: Record<string, Record<string, number>> | null
   variantOptionImages?: Record<string, Record<string, string>> | null
   variantOptionLinks?: Record<string, Record<string, string>> | null
+  variantOptionPrices?: Record<string, Record<string, string | number>> | null
+  variantOptionOriginalPrices?: Record<string, Record<string, string | number>> | null
+  variantOptionTitles?: Record<string, Record<string, string>> | null
   showBuyOnAmazon?: boolean
   showAddToCart?: boolean
   reviews?: Array<{ id: string; name: string; country: string; title: string; content: string; rating: number; images: string[]; createdAt?: string | Date }>
-}) {
-   const [selectedImageIndex, setSelectedImageIndex] = useState<number>(0)
-   const [selection, setSelection] = useState<Record<string, string>>({})
+}): ReactElement {
+  const [selectedGalleryIndex, setSelectedGalleryIndex] = useState<number>(0)
+  const [selection, setSelection] = useState<Record<string, string>>(() => getInitialVariantSelection(variantGroups))
   const [failedThumb, setFailedThumb] = useState<Record<string, boolean>>({})
-  const [lastClickedGroup, setLastClickedGroup] = useState<string | null>(null)
+  const [lastClickedGroup, setLastClickedGroup] = useState<string | null>(variantGroups?.[0]?.name || null)
   const [previewUrls, setPreviewUrls] = useState<string[] | null>(null)
   const [previewIndex, setPreviewIndex] = useState<number>(0)
   const [sortBy, setSortBy] = useState<'time' | 'rating'>('time')
   const [onlyWithImages, setOnlyWithImages] = useState<boolean>(false)
+  const [currentReviewPage, setCurrentReviewPage] = useState<number>(1)
   const touchStartXRef = useRef<number | null>(null)
+  const REVIEWS_PER_PAGE = 10
  
    const safeImages = useMemo(() => {
      const arr = Array.isArray(images) && images.length > 0 ? images : [mainImage]
      return arr.filter(Boolean)
    }, [images, mainImage])
+  const youtubeId = useMemo(() => extractYoutubeId(youtubeUrl), [youtubeUrl])
+  const normalizedYoutubeIndex = useMemo(() => {
+    if (!youtubeId) return null
+    const raw = typeof youtubeIndex === 'number' && Number.isFinite(youtubeIndex) ? youtubeIndex : 1
+    return Math.max(0, Math.min(raw, safeImages.length))
+  }, [youtubeId, youtubeIndex, safeImages.length])
+  const hasGalleryVideo = !!youtubeId && normalizedYoutubeIndex !== null
+  const toGalleryIndex = (imageIndex: number) => {
+    if (!hasGalleryVideo || normalizedYoutubeIndex === null) return imageIndex
+    return imageIndex >= normalizedYoutubeIndex ? imageIndex + 1 : imageIndex
+  }
+  const toImageIndex = (galleryIndex: number) => {
+    if (!hasGalleryVideo || normalizedYoutubeIndex === null) return galleryIndex
+    if (galleryIndex === normalizedYoutubeIndex) {
+      return Math.min(normalizedYoutubeIndex, Math.max(0, safeImages.length - 1))
+    }
+    if (galleryIndex > normalizedYoutubeIndex) return galleryIndex - 1
+    return galleryIndex
+  }
+   const selectedImageIndex = toImageIndex(selectedGalleryIndex)
    const primaryImageUrl = safeImages[selectedImageIndex] || mainImage
  
    const resolveIndex = (groupName: string, option: string): number => {
@@ -102,8 +180,24 @@ import AddToCartButton from './AddToCartButton'
      setSelection((prev) => ({ ...prev, [groupName]: opt }))
      setLastClickedGroup(groupName)
      const idx = resolveIndex(groupName, opt)
-     setSelectedImageIndex(idx)
-   }
+    setSelectedGalleryIndex(toGalleryIndex(idx))
+  }
+
+  useEffect(() => {
+    if (!Array.isArray(variantGroups) || variantGroups.length === 0) return
+    setSelection(prev => {
+      const hasInvalid = variantGroups.some(g => !prev[g.name] || !(g.options || []).includes(prev[g.name]))
+      if (!hasInvalid && Object.keys(prev).length > 0) return prev
+      return getInitialVariantSelection(variantGroups)
+    })
+    const firstGroup = variantGroups[0]
+    const firstOption = (firstGroup?.options || []).find(Boolean)
+    if (firstGroup?.name && firstOption) {
+      setLastClickedGroup(firstGroup.name)
+      const idx = resolveIndex(firstGroup.name, firstOption)
+      setSelectedGalleryIndex(toGalleryIndex(idx))
+    }
+  }, [variantGroups, variantImageMap, safeImages.length, hasGalleryVideo, normalizedYoutubeIndex])
 
   // 构造缩略图URL
   const getThumbUrl = (groupName: string, opt: string): string | null => {
@@ -130,6 +224,26 @@ import AddToCartButton from './AddToCartButton'
     }
     return arr
   }, [reviews, sortBy, onlyWithImages])
+
+  useEffect(() => {
+    setCurrentReviewPage(1)
+  }, [sortBy, onlyWithImages, reviews])
+
+  const totalReviewPages = useMemo(() => {
+    return Math.max(1, Math.ceil(sortedReviews.length / REVIEWS_PER_PAGE))
+  }, [sortedReviews.length, REVIEWS_PER_PAGE])
+
+  useEffect(() => {
+    if (currentReviewPage > totalReviewPages) {
+      setCurrentReviewPage(totalReviewPages)
+    }
+  }, [currentReviewPage, totalReviewPages])
+
+  const pagedReviews = useMemo(() => {
+    const start = (currentReviewPage - 1) * REVIEWS_PER_PAGE
+    const end = start + REVIEWS_PER_PAGE
+    return sortedReviews.slice(start, end)
+  }, [sortedReviews, currentReviewPage, REVIEWS_PER_PAGE])
 
   const formatReviewDate = (dt?: string | Date) => {
     if (!dt) return ''
@@ -182,6 +296,80 @@ import AddToCartButton from './AddToCartButton'
     return amazonUrl
   })()
 
+  const toNumber = (v?: string | number | null): number | null => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null
+    if (typeof v !== 'string') return null
+    const n = Number(v)
+    if (!Number.isFinite(n)) return null
+    return n
+  }
+
+  const currentVariantPrice = (() => {
+    if (Array.isArray(variantGroups) && variantGroups.length > 1) {
+      const allSelected = variantGroups.every(g => !!selection[g.name])
+      if (allSelected) {
+        const key = buildComboKey(variantGroups, selection)
+        const comboPrice = toNumber(variantOptionPrices?.[COMBO_KEY]?.[key])
+        if (comboPrice !== null) return comboPrice
+      }
+    }
+    if (lastClickedGroup && selection[lastClickedGroup]) {
+      const p = toNumber(variantOptionPrices?.[lastClickedGroup]?.[selection[lastClickedGroup]])
+      if (p !== null) return p
+    }
+    for (const [g, opt] of Object.entries(selection)) {
+      const p = toNumber(variantOptionPrices?.[g]?.[opt])
+      if (p !== null) return p
+    }
+    return null
+  })()
+  const currentVariantOriginalPrice = (() => {
+    if (Array.isArray(variantGroups) && variantGroups.length > 1) {
+      const allSelected = variantGroups.every(g => !!selection[g.name])
+      if (allSelected) {
+        const key = buildComboKey(variantGroups, selection)
+        const comboOriginalPrice = toNumber(variantOptionOriginalPrices?.[COMBO_KEY]?.[key])
+        if (comboOriginalPrice !== null) return comboOriginalPrice
+      }
+    }
+    if (lastClickedGroup && selection[lastClickedGroup]) {
+      const p = toNumber(variantOptionOriginalPrices?.[lastClickedGroup]?.[selection[lastClickedGroup]])
+      if (p !== null) return p
+    }
+    for (const [g, opt] of Object.entries(selection)) {
+      const p = toNumber(variantOptionOriginalPrices?.[g]?.[opt])
+      if (p !== null) return p
+    }
+    return null
+  })()
+  const currentVariantTitle = (() => {
+    const normalizeTitle = (v?: string | null): string | null => {
+      if (!v || typeof v !== 'string') return null
+      const t = v.trim()
+      return t || null
+    }
+    if (Array.isArray(variantGroups) && variantGroups.length > 1) {
+      const allSelected = variantGroups.every(g => !!selection[g.name])
+      if (allSelected) {
+        const key = buildComboKey(variantGroups, selection)
+        const comboTitle = normalizeTitle(variantOptionTitles?.[COMBO_KEY]?.[key])
+        if (comboTitle) return comboTitle
+      }
+    }
+    if (lastClickedGroup && selection[lastClickedGroup]) {
+      const t = normalizeTitle(variantOptionTitles?.[lastClickedGroup]?.[selection[lastClickedGroup]])
+      if (t) return t
+    }
+    for (const [g, opt] of Object.entries(selection)) {
+      const t = normalizeTitle(variantOptionTitles?.[g]?.[opt])
+      if (t) return t
+    }
+    return null
+  })()
+  const displayPrice = currentVariantPrice ?? price
+  const displayOriginalPrice = currentVariantOriginalPrice ?? (currentVariantPrice === null ? (originalPrice ?? null) : null)
+  const displayTitle = currentVariantTitle ?? title
+
   return (
     <>
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
@@ -191,14 +379,16 @@ import AddToCartButton from './AddToCartButton'
           images={safeImages}
           mainImage={mainImage}
           title={title}
-          selectedImageIndex={selectedImageIndex}
-          onImageChange={setSelectedImageIndex}
+          youtubeUrl={youtubeUrl}
+          youtubeIndex={normalizedYoutubeIndex}
+          selectedIndex={selectedGalleryIndex}
+          onIndexChange={setSelectedGalleryIndex}
         />
       </div>
 
       {/* 右侧：详情 */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
+        <h1 className="text-2xl font-bold text-gray-900">{displayTitle}</h1>
         {categoryName && (
           <p className="mt-2 text-gray-600">Category: {categoryName}</p>
         )}
@@ -207,6 +397,9 @@ import AddToCartButton from './AddToCartButton'
         )}
         {upc && (
           <p className="mt-1 text-gray-600">UPC: {upc}</p>
+        )}
+        {asin && (
+          <p className="mt-1 text-gray-600">ASIN: {asin}</p>
         )}
         {publishedAt && (
           <p className="mt-1 text-gray-500 text-sm">Date First Available : {formatPublishedAt(publishedAt)}</p>
@@ -277,8 +470,8 @@ import AddToCartButton from './AddToCartButton'
         <AddToCartButton
         id={id}
         slug={slug}
-        title={title}
-        price={price}
+        title={displayTitle}
+        price={displayPrice}
         imageUrl={primaryImageUrl}
         selectedOptions={selection}
         showQuantitySelector={true}
@@ -288,28 +481,28 @@ import AddToCartButton from './AddToCartButton'
 
          {/* 价格模块放在选项之后 */}
          <div className="mt-4 flex items-center gap-3">
-           <span className="text-2xl font-semibold text-gray-900">{formatPrice(price)}</span>
-           {originalPrice ? (
-             <span className="text-gray-500 line-through">{formatPrice(originalPrice)}</span>
+           <span className="text-2xl font-semibold text-gray-900">{formatPrice(displayPrice)}</span>
+           {(typeof displayOriginalPrice === 'number' && displayOriginalPrice > displayPrice) ? (
+             <span className="text-gray-500 line-through">{formatPrice(displayOriginalPrice)}</span>
            ) : null}
         </div>
 
         {Array.isArray(bullets) && bullets.length > 0 && (
           <ul className="mt-4 list-disc list-inside text-gray-700 space-y-1">
-            {bullets.map((b, i) => (<li key={i}>{b}</li>))}
+            {bullets.filter(b => b && b.trim()).map((b, i) => (<li key={i}>{b}</li>))}
           </ul>
         )}
 
-        <div className="mt-8">
-          <h2 className="text-lg font-semibold text-gray-900">Product Description</h2>
-          <div 
-            className="mt-2 text-gray-700 prose prose-sm max-w-none"
-            dangerouslySetInnerHTML={{ __html: description }}
-            style={{ lineHeight: '1.6' }}
-          />
-        </div>
-
       </div>
+    </div>
+
+    <div className="mt-10">
+      <h2 className="text-lg font-semibold text-gray-900">Product Description</h2>
+      <div 
+        className="mt-2 text-gray-700 prose prose-sm max-w-none"
+        dangerouslySetInnerHTML={{ __html: replaceYoutubeLinks(description) }}
+        style={{ lineHeight: '1.6' }}
+      />
     </div>
     {Array.isArray(sortedReviews) && sortedReviews.length > 0 && (
       <div className="mt-10">
@@ -328,7 +521,7 @@ import AddToCartButton from './AddToCartButton'
           </div>
         </div>
         <div className="mt-4 divide-y divide-gray-200">
-          {sortedReviews.map((r) => (
+          {pagedReviews.map((r) => (
             <div key={r.id} className="py-4">
               <div className="flex items-center gap-2">
                 {Array.from({ length: 5 }).map((_, i) => (
@@ -356,6 +549,32 @@ import AddToCartButton from './AddToCartButton'
               )}
             </div>
           ))}
+        </div>
+        <div className="mt-4 flex items-center justify-between text-sm text-gray-600">
+          <span>
+            {sortedReviews.length > 0
+              ? `Showing ${(currentReviewPage - 1) * REVIEWS_PER_PAGE + 1}-${Math.min(currentReviewPage * REVIEWS_PER_PAGE, sortedReviews.length)} of ${sortedReviews.length}`
+              : 'Showing 0 of 0'}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="px-3 py-1 rounded border disabled:opacity-50"
+              onClick={() => setCurrentReviewPage((p) => Math.max(1, p - 1))}
+              disabled={currentReviewPage <= 1}
+            >
+              Prev
+            </button>
+            <span>{currentReviewPage} / {totalReviewPages}</span>
+            <button
+              type="button"
+              className="px-3 py-1 rounded border disabled:opacity-50"
+              onClick={() => setCurrentReviewPage((p) => Math.min(totalReviewPages, p + 1))}
+              disabled={currentReviewPage >= totalReviewPages}
+            >
+              Next
+            </button>
+          </div>
         </div>
       </div>
     )}

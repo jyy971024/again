@@ -1,16 +1,22 @@
 import Link from 'next/link'
 import Layout from '@/components/Layout'
 import { db } from '@/lib/db'
-import { formatPrice } from '@/lib/utils'
+import { formatPrice, getProductUrlSegment } from '@/lib/utils'
 import AddToCartButton from '@/components/AddToCartButton'
 import FallbackImage from '@/components/FallbackImage'
 import type { Product } from '@prisma/client'
+
+type ProductWithVariantPrice = Product & {
+  variantOptionPrices?: string | null
+  variantOptionOriginalPrices?: string | null
+  variantOptionTitles?: string | null
+}
 
 export default async function ProductsPage({ searchParams }: { searchParams?: Promise<{ categoryId?: string; q?: string }> }) {
   const resolvedParams = searchParams ? await searchParams : {}
   const selectedCategoryId = resolvedParams?.categoryId || ''
   const q = resolvedParams?.q || ''
-  let products: Product[] = []
+  let products: ProductWithVariantPrice[] = []
   try {
     const where: any = { active: true }
     if (selectedCategoryId) where.categoryId = selectedCategoryId
@@ -30,17 +36,6 @@ export default async function ProductsPage({ searchParams }: { searchParams?: Pr
   } catch (e) {
     console.error('Failed to load products:', e)
     products = []
-  }
-
-  // Fetch categories inside the request
-  let categories: Array<{ id: string; name: string }> = []
-  try {
-    categories = await db.category.findMany({ 
-      orderBy: { name: 'asc' }, 
-      select: { id: true, name: true } 
-    })
-  } catch (e) {
-    console.error('Failed to load categories:', e)
   }
 
   let aggMap: Record<string, { avgRating: number; reviewCount: number }> = {}
@@ -65,7 +60,7 @@ export default async function ProductsPage({ searchParams }: { searchParams?: Pr
     console.error('Failed to aggregate reviews:', e)
   }
 
-  const resolveImage = (p: Product): string => {
+  const resolveImage = (p: ProductWithVariantPrice): string => {
     const main = (p?.mainImage ?? '').trim()
     if (main) return main
     try {
@@ -76,6 +71,68 @@ export default async function ProductsPage({ searchParams }: { searchParams?: Pr
       }
     } catch {}
     return 'https://placehold.co/600x600?text=No+Image'
+  }
+
+  const resolveListPrices = (p: ProductWithVariantPrice): { price: number; originalPrice: number | null } => {
+    const basePrice = Number(p?.price ?? 0)
+    const baseOriginal = typeof p?.originalPrice === 'number' ? Number(p.originalPrice) : null
+    try {
+      const pricesObj = p?.variantOptionPrices ? JSON.parse(p.variantOptionPrices) : null
+      const originalObj = p?.variantOptionOriginalPrices
+        ? JSON.parse(p.variantOptionOriginalPrices)
+        : (pricesObj?.__original_price_map__ ?? null)
+      const pickFirstNumber = (obj: any): number | null => {
+        if (!obj || typeof obj !== 'object') return null
+        const combo = obj.__combo__
+        if (combo && typeof combo === 'object') {
+          const comboValue = Object.values(combo).find((v) => Number.isFinite(Number(v)))
+          if (comboValue !== undefined) return Number(comboValue)
+        }
+        for (const [k, group] of Object.entries(obj)) {
+          if (k === '__combo__' || k === '__original_price_map__') continue
+          if (!group || typeof group !== 'object') continue
+          const v = Object.values(group).find((x) => Number.isFinite(Number(x)))
+          if (v !== undefined) return Number(v)
+        }
+        return null
+      }
+      const variantPrice = pickFirstNumber(pricesObj)
+      const variantOriginal = pickFirstNumber(originalObj)
+      return {
+        price: variantPrice ?? basePrice,
+        originalPrice: variantOriginal ?? (variantPrice === null ? baseOriginal : null),
+      }
+    } catch {
+      return { price: basePrice, originalPrice: baseOriginal }
+    }
+  }
+
+  const resolveListTitle = (p: ProductWithVariantPrice): string => {
+    const baseTitle = (p?.title || '').trim() || 'Untitled Product'
+    try {
+      const pricesObj = p?.variantOptionPrices ? JSON.parse(p.variantOptionPrices) : null
+      const titleObj = p?.variantOptionTitles
+        ? JSON.parse(p.variantOptionTitles)
+        : (pricesObj?.__title_map__ ?? null)
+      const pickFirstTitle = (obj: any): string | null => {
+        if (!obj || typeof obj !== 'object') return null
+        const combo = obj.__combo__
+        if (combo && typeof combo === 'object') {
+          const comboValue = Object.values(combo).find((v) => typeof v === 'string' && v.trim())
+          if (typeof comboValue === 'string') return comboValue.trim()
+        }
+        for (const [k, group] of Object.entries(obj)) {
+          if (k === '__combo__' || k === '__title_map__') continue
+          if (!group || typeof group !== 'object') continue
+          const v = Object.values(group).find((x) => typeof x === 'string' && x.trim())
+          if (typeof v === 'string') return v.trim()
+        }
+        return null
+      }
+      return pickFirstTitle(titleObj) || baseTitle
+    } catch {
+      return baseTitle
+    }
   }
 
   return (
@@ -107,9 +164,12 @@ export default async function ProductsPage({ searchParams }: { searchParams?: Pr
 
           <div className="mt-8 grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 lg:grid-cols-3 xl:gap-x-8">
             {products.map((product) => {
+              const productPath = `/products/${getProductUrlSegment(product as Product & { asin?: string | null })}`
               const displayImage = resolveImage(product)
-              const price = Number(product?.price ?? 0)
-              const hasOriginal = typeof product?.originalPrice === 'number' && Number(product.originalPrice) > price
+              const resolvedPrice = resolveListPrices(product)
+              const resolvedTitle = resolveListTitle(product)
+              const price = resolvedPrice.price
+              const hasOriginal = typeof resolvedPrice.originalPrice === 'number' && Number(resolvedPrice.originalPrice) > price
               const amazonUrl = typeof product?.amazonUrl === 'string' ? product.amazonUrl : ''
               const showBuy = product.showBuyOnAmazon !== false && !!amazonUrl
               const showAdd = product.showAddToCart !== false
@@ -128,9 +188,9 @@ export default async function ProductsPage({ searchParams }: { searchParams?: Pr
                   <div className="mt-4 flex justify-between">
                     <div className="flex-1">
                       <h3 className="relative text-sm text-gray-700">
-                        <Link href={`/products/${product.slug}`}>
+                        <Link href={productPath}>
                           <span aria-hidden="true" className="absolute inset-0" />
-                          {product.title || 'Untitled Product'}
+                          {resolvedTitle}
                         </Link>
                       </h3>
                       {reviewCount > 0 && (
@@ -150,13 +210,13 @@ export default async function ProductsPage({ searchParams }: { searchParams?: Pr
                         </p>
                         {hasOriginal && (
                           <p className="text-sm text-gray-500 line-through">
-                            {formatPrice(Number(product.originalPrice))}
+                            {formatPrice(Number(resolvedPrice.originalPrice))}
                           </p>
                         )}
                       </div>
                       <div className="mt-4 flex items-center gap-2">
                         <Link
-                          href={`/products/${product.slug}`}
+                          href={productPath}
                           className="inline-flex items-center justify-center px-3 py-2 rounded-md bg-orange-600 text-white text-sm font-semibold leading-tight text-center hover:bg-orange-500"
                         >
                           View Details
@@ -175,8 +235,8 @@ export default async function ProductsPage({ searchParams }: { searchParams?: Pr
                           <div className="flex items-center">
                             <AddToCartButton
                               id={product.id}
-                              slug={product.slug}
-                              title={product.title}
+                              slug={getProductUrlSegment(product as Product & { asin?: string | null })}
+                              title={resolvedTitle}
                               price={price}
                               imageUrl={resolveImage(product)}
                               size="sm"
@@ -202,4 +262,9 @@ export default async function ProductsPage({ searchParams }: { searchParams?: Pr
     </Layout>
   )
 }
-
+  // 类别列表
+  let categories: Array<{ id: string; name: string }> = []
+  try {
+    const rows = await db.category.findMany({ orderBy: { name: 'asc' }, select: { id: true, name: true } })
+    categories = rows
+  } catch {}

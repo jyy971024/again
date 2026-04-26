@@ -1,9 +1,10 @@
+export const revalidate = 3600;
+
 import Layout from '@/components/Layout'
 import ProductDetailClient from '@/components/ProductDetailClient'
 import { db } from '@/lib/db'
 import Link from 'next/link'
-import { formatPrice } from '@/lib/utils'
-import type { ProductReview } from '@prisma/client'
+import { getProductUrlSegment, normalizeAsin } from '@/lib/utils'
 
 function parseJson<T>(s: string | null | undefined, fallback: T): T {
   try { return s ? JSON.parse(s) as T : fallback } catch { return fallback }
@@ -30,9 +31,23 @@ export default async function ProductDetail({ params }: { params: Promise<{ slug
   // Safely attempt to fetch product; fall back to null if DB is misconfigured
   const product = await (async () => {
     try {
+      const normalizedSlugAsin = normalizeAsin(slug)
+      const byAsin = normalizedSlugAsin
+        ? await db.product.findUnique({
+            where: { asin: normalizedSlugAsin },
+            include: {
+              category: true,
+              brandRelation: true
+            },
+          })
+        : null
+      if (byAsin) return byAsin
       return await db.product.findUnique({
         where: { slug },
-        include: { category: true },
+        include: {
+          category: true,
+          brandRelation: true
+        },
       })
     } catch (e) {
       console.error('Failed to load product:', e)
@@ -40,7 +55,7 @@ export default async function ProductDetail({ params }: { params: Promise<{ slug
     }
   })()
 
-  if (!product) {
+  if (!product || !product.active) {
     return (
       <Layout>
         <div className="max-w-3xl mx-auto px-4 py-16">
@@ -59,9 +74,14 @@ export default async function ProductDetail({ params }: { params: Promise<{ slug
   const bullets = Array.isArray(parsedBullets) ? parsedBullets : []
 
   type VariantGroup = { name: string; options: string[] }
-  const brand = product.brand ?? null
+  // 优先使用关联品牌的名称，回退到旧字段
+  const brand = (product as any).brandRelation?.name ?? product.brand ?? null
   const upc = product.upc ?? null
+  const asin = (product as { asin?: string | null }).asin ?? null
+  const showAsinOnFrontend = (product as { showAsinOnFrontend?: boolean | null }).showAsinOnFrontend === true
   const publishedAt = product.publishedAt ?? null
+  const youtubeUrl = (product as { youtubeUrl?: string | null }).youtubeUrl ?? null
+  const youtubeIndex = (product as { youtubeIndex?: number | null }).youtubeIndex ?? null
   const variantGroups = parseJson<VariantGroup[]>(product.variants, [])
   const variantImageMap = (() => {
     try {
@@ -85,6 +105,48 @@ export default async function ProductDetail({ params }: { params: Promise<{ slug
       if (!raw) return null
       const obj = JSON.parse(raw)
       return obj && typeof obj === 'object' ? obj : null
+    } catch { return null }
+  })()
+  const variantOptionPrices = (() => {
+    try {
+      const raw = (product as { variantOptionPrices?: string | null }).variantOptionPrices
+      if (!raw) return null
+      const obj = JSON.parse(raw)
+      if (obj && typeof obj === 'object' && (obj as any).__original_price_map__) {
+        delete (obj as any).__original_price_map__
+      }
+      if (obj && typeof obj === 'object' && (obj as any).__title_map__) {
+        delete (obj as any).__title_map__
+      }
+      return obj && typeof obj === 'object' ? obj : null
+    } catch { return null }
+  })()
+  const variantOptionOriginalPrices = (() => {
+    try {
+      const raw = (product as { variantOptionOriginalPrices?: string | null }).variantOptionOriginalPrices
+      if (raw) {
+        const obj = JSON.parse(raw)
+        return obj && typeof obj === 'object' ? obj : null
+      }
+      const pricesRaw = (product as { variantOptionPrices?: string | null }).variantOptionPrices
+      if (!pricesRaw) return null
+      const pricesObj = JSON.parse(pricesRaw)
+      const fallback = pricesObj?.__original_price_map__
+      return fallback && typeof fallback === 'object' ? fallback : null
+    } catch { return null }
+  })()
+  const variantOptionTitles = (() => {
+    try {
+      const raw = (product as { variantOptionTitles?: string | null }).variantOptionTitles
+      if (raw) {
+        const obj = JSON.parse(raw)
+        return obj && typeof obj === 'object' ? obj : null
+      }
+      const pricesRaw = (product as { variantOptionPrices?: string | null }).variantOptionPrices
+      if (!pricesRaw) return null
+      const pricesObj = JSON.parse(pricesRaw)
+      const fallback = pricesObj?.__title_map__
+      return fallback && typeof fallback === 'object' ? fallback : null
     } catch { return null }
   })()
 
@@ -113,11 +175,12 @@ export default async function ProductDetail({ params }: { params: Promise<{ slug
         <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 sm:py-24 lg:px-8">
           <ProductDetailClient
             id={product.id}
-            slug={product.slug}
+            slug={getProductUrlSegment(product)}
             title={product.title}
             categoryName={product.category?.name ?? 'Uncategorized'}
             brand={brand ?? null}
             upc={upc ?? null}
+            asin={showAsinOnFrontend ? asin : null}
             publishedAt={publishedAt ?? null}
             description={product.description}
             amazonUrl={product.amazonUrl}
@@ -125,11 +188,16 @@ export default async function ProductDetail({ params }: { params: Promise<{ slug
             originalPrice={product.originalPrice ?? null}
             images={images}
             mainImage={product.mainImage}
+            youtubeUrl={youtubeUrl}
+            youtubeIndex={youtubeIndex}
             bullets={bullets}
             variantGroups={Array.isArray(variantGroups) ? variantGroups : []}
             variantImageMap={variantImageMap}
             variantOptionImages={variantOptionImages}
             variantOptionLinks={variantOptionLinks}
+            variantOptionPrices={variantOptionPrices}
+            variantOptionOriginalPrices={variantOptionOriginalPrices}
+            variantOptionTitles={variantOptionTitles}
             showBuyOnAmazon={(product.showBuyOnAmazon !== false)}
             showAddToCart={(product.showAddToCart !== false)}
             reviews={reviews}
